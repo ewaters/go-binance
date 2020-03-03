@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/adshao/go-binance/common"
@@ -158,6 +159,7 @@ func NewClient(apiKey, secretKey string) *Client {
 		UserAgent:  "Binance/golang",
 		HTTPClient: http.DefaultClient,
 		Logger:     log.New(os.Stderr, "Binance-golang ", log.LstdFlags),
+		Weights:    make(map[string]string),
 	}
 }
 
@@ -178,6 +180,7 @@ type Client struct {
 	Debug      bool
 	Logger     *log.Logger
 	do         doFunc
+	Weights    map[string]string
 }
 
 func (c *Client) debug(format string, v ...interface{}) {
@@ -276,6 +279,16 @@ func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption)
 	c.debug("response: %#v", res)
 	c.debug("response body: %s", string(data))
 	c.debug("response status code: %d", res.StatusCode)
+
+	const mbxPrefix = "X-MBX-USED-WEIGHT-"
+	for key, values := range res.Header {
+		ukey := strings.ToUpper(key)
+		if !strings.HasPrefix(ukey, mbxPrefix) {
+			continue
+		}
+		interval := strings.TrimPrefix(ukey, mbxPrefix)
+		c.Weights[interval] = values[0]
+	}
 
 	if res.StatusCode >= 400 {
 		apiErr := new(common.APIError)
