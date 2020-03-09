@@ -16,6 +16,7 @@ func (s *GetAccountService) Do(ctx context.Context, opts ...RequestOption) (res 
 		method:   "GET",
 		endpoint: "/api/v3/account",
 		secType:  secTypeSigned,
+		weight:   5,
 	}
 	data, err := s.c.callAPI(ctx, r, opts...)
 	if err != nil {

@@ -24,9 +24,11 @@ func (s *ListBookTickersService) Do(ctx context.Context, opts ...RequestOption) 
 	r := &request{
 		method:   "GET",
 		endpoint: "/api/v3/ticker/bookTicker",
+		weight:   2,
 	}
 	if s.symbol != nil {
 		r.setParam("symbol", *s.symbol)
+		r.weight = 1
 	}
 	data, err := s.c.callAPI(ctx, r, opts...)
 	data = common.ToJSONList(data)
@@ -67,9 +69,11 @@ func (s *ListPricesService) Do(ctx context.Context, opts ...RequestOption) (res 
 	r := &request{
 		method:   "GET",
 		endpoint: "/api/v3/ticker/price",
+		weight:   2,
 	}
 	if s.symbol != nil {
 		r.setParam("symbol", *s.symbol)
+		r.weight = 1
 	}
 	data, err := s.c.callAPI(ctx, r, opts...)
 	if err != nil {
@@ -107,9 +111,11 @@ func (s *ListPriceChangeStatsService) Do(ctx context.Context, opts ...RequestOpt
 	r := &request{
 		method:   "GET",
 		endpoint: "/api/v3/ticker/24hr",
+		weight:   40,
 	}
 	if s.symbol != nil {
 		r.setParam("symbol", *s.symbol)
+		r.weight = 1
 	}
 	data, err := s.c.callAPI(ctx, r, opts...)
 	if err != nil {

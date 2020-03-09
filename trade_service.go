@@ -51,6 +51,7 @@ func (s *ListTradesService) Do(ctx context.Context, opts ...RequestOption) (res 
 		method:   "GET",
 		endpoint: "/api/v3/myTrades",
 		secType:  secTypeSigned,
+		weight:   5,
 	}
 	r.setParam("symbol", s.symbol)
 	if s.limit != nil {
@@ -109,6 +110,7 @@ func (s *HistoricalTradesService) Do(ctx context.Context, opts ...RequestOption)
 		method:   "GET",
 		endpoint: "/api/v3/historicalTrades",
 		secType:  secTypeAPIKey,
+		weight:   5,
 	}
 	r.setParam("symbol", s.symbol)
 	if s.limit != nil {

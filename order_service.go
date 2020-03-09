@@ -3,6 +3,7 @@ package binance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
 
 // CreateOrderService create order
@@ -13,7 +14,8 @@ type CreateOrderService struct {
 	orderType        OrderType
 	timeInForce      *TimeInForceType
 	newOrderRespType *NewOrderRespType
-	quantity         string
+	quantity         *string
+	quoteOrderQty    *string
 	price            *string
 	newClientOrderID *string
 	stopPrice        *string
@@ -46,7 +48,13 @@ func (s *CreateOrderService) TimeInForce(timeInForce TimeInForceType) *CreateOrd
 
 // Quantity set quantity
 func (s *CreateOrderService) Quantity(quantity string) *CreateOrderService {
-	s.quantity = quantity
+	s.quantity = &quantity
+	return s
+}
+
+// QuoteOrderQty set quote order quantity
+func (s *CreateOrderService) QuoteOrderQty(quoteOrderQty string) *CreateOrderService {
+	s.quoteOrderQty = &quoteOrderQty
 	return s
 }
 
@@ -81,16 +89,24 @@ func (s *CreateOrderService) NewOrderRespType(newOrderRespType NewOrderRespType)
 }
 
 func (s *CreateOrderService) createOrder(ctx context.Context, endpoint string, opts ...RequestOption) (data []byte, err error) {
+	if s.quantity == nil && s.quoteOrderQty == nil {
+		return nil, errors.New("either quantity or quoteOrderQty must be set")
+	}
 	r := &request{
 		method:   "POST",
 		endpoint: endpoint,
 		secType:  secTypeSigned,
 	}
 	m := params{
-		"symbol":   s.symbol,
-		"side":     s.side,
-		"type":     s.orderType,
-		"quantity": s.quantity,
+		"symbol": s.symbol,
+		"side":   s.side,
+		"type":   s.orderType,
+	}
+	if s.quantity != nil {
+		m["quantity"] = *s.quantity
+	}
+	if s.quoteOrderQty != nil {
+		m["quoteOrderQty"] = *s.quoteOrderQty
 	}
 	if s.timeInForce != nil {
 		m["timeInForce"] = *s.timeInForce
@@ -181,9 +197,11 @@ func (s *ListOpenOrdersService) Do(ctx context.Context, opts ...RequestOption) (
 		method:   "GET",
 		endpoint: "/api/v3/openOrders",
 		secType:  secTypeSigned,
+		weight:   40,
 	}
 	if s.symbol != "" {
 		r.setParam("symbol", s.symbol)
+		r.weight = 1
 	}
 	data, err := s.c.callAPI(ctx, r, opts...)
 	if err != nil {
@@ -267,6 +285,7 @@ type Order struct {
 	Time                     int64           `json:"time"`
 	UpdateTime               int64           `json:"updateTime"`
 	IsWorking                bool            `json:"isWorking"`
+	OrigQuoteOrderQty        string          `json:"origQuoteOrderQty"`
 }
 
 // ListOrdersService all account orders; active, canceled, or filled
@@ -315,6 +334,7 @@ func (s *ListOrdersService) Do(ctx context.Context, opts ...RequestOption) (res 
 		method:   "GET",
 		endpoint: "/api/v3/allOrders",
 		secType:  secTypeSigned,
+		weight:   5,
 	}
 	r.setParam("symbol", s.symbol)
 	if s.orderID != nil {

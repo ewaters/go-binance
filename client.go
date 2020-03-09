@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,16 +152,21 @@ func newJSON(data []byte) (j *simplejson.Json, err error) {
 // NewClient initialize an API client instance with API key and secret key.
 // You should always call this function before using this SDK.
 // Services will be created by the form client.NewXXXService().
+// Call Close() after you are done with the Client.
 func NewClient(apiKey, secretKey string) *Client {
-	return &Client{
+	c := &Client{
 		APIKey:     apiKey,
 		SecretKey:  secretKey,
 		BaseURL:    "https://api.binance.com",
 		UserAgent:  "Binance/golang",
 		HTTPClient: http.DefaultClient,
 		Logger:     log.New(os.Stderr, "Binance-golang ", log.LstdFlags),
-		Weights:    make(map[string]string),
+		doneC:      make(chan struct{}),
+		getLeaseC:  make(chan leaseRequest),
+		backOffC:   make(chan int),
 	}
+	go c.runWeightLeaser()
+	return c
 }
 
 // NewFuturesClient initialize client for futures API
@@ -180,13 +186,125 @@ type Client struct {
 	Debug      bool
 	Logger     *log.Logger
 	do         doFunc
-	Weights    map[string]string
+
+	doneC     chan struct{}
+	getLeaseC chan leaseRequest
+	backOffC  chan int
 }
 
 func (c *Client) debug(format string, v ...interface{}) {
 	if c.Debug {
 		c.Logger.Printf(format, v...)
 	}
+}
+
+// Close stops the background goroutine which keeps the client from exceeding the API limits.
+func (c *Client) Close() {
+	c.doneC <- struct{}{}
+}
+
+type leaseRequest struct {
+	weight int
+	respC  chan int
+}
+
+func (c *Client) runWeightLeaser() {
+	const maxWeightPerMinute = 1000 // It's actually 1200 but I'm being cautious.
+
+	var currentMinute time.Time
+	var currentWeight int
+	var waitingRequests []leaseRequest
+	var durationUntilReset time.Duration
+
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+
+	drainRequests := func() {
+		var stillWaiting []leaseRequest
+		drained := 0
+		for _, req := range waitingRequests {
+			if currentWeight+req.weight > maxWeightPerMinute {
+				stillWaiting = append(stillWaiting, req)
+				continue
+			}
+			drained++
+			currentWeight += req.weight
+			req.respC <- currentWeight
+		}
+		if drained > 0 || len(stillWaiting) > 0 {
+			c.debug("runWeightLeaser: drainRequests drained %d; %d still remain", drained, len(stillWaiting))
+		}
+		waitingRequests = stillWaiting
+	}
+
+	maybeAdvanceTime := func() {
+		now := time.Now()
+		nowMinute := now.Truncate(time.Minute)
+		durationUntilReset = nowMinute.Add(time.Minute).Sub(now)
+		if currentMinute.Equal(nowMinute) {
+			return
+		}
+		c.debug("runWeightLeaser: maybeAdvanceTime came upon a new minute (%v) with %d waiting requests", nowMinute, len(waitingRequests))
+		currentMinute = nowMinute
+		currentWeight = 0
+		if len(waitingRequests) > 0 {
+			drainRequests()
+		}
+	}
+
+	for {
+		select {
+		case <-c.doneC:
+			c.debug("runWeightLeaser exiting: doneC message")
+			return
+
+		case <-tick.C:
+			maybeAdvanceTime()
+
+		case req, ok := <-c.getLeaseC:
+			if !ok {
+				c.debug("runWeightLeaser exiting: getLeaseC is closed")
+				return
+			}
+
+			maybeAdvanceTime()
+			if currentWeight+req.weight > maxWeightPerMinute {
+				// Can't handle the request now - it must wait.
+				if len(waitingRequests) == 0 {
+					c.Logger.Printf("You have exceeded the IP limits of the API. Waiting %v for more quota", durationUntilReset)
+					c.debug("runWeightLeaser: starting to queue requests")
+				}
+				waitingRequests = append(waitingRequests, req)
+				continue
+			}
+			currentWeight += req.weight
+			c.debug("runWeightLeaser: currentWeight: %d", currentWeight)
+			req.respC <- currentWeight
+
+		case wait, ok := <-c.backOffC:
+			if !ok {
+				c.debug("runWeightLeaser exiting: backOffC is closed")
+				return
+			}
+
+			c.Logger.Printf("You have exceeded the IP limits of the API. Waiting %d seconds before proceeding.", wait)
+			time.Sleep(time.Duration(wait) * time.Second)
+
+		}
+	}
+}
+
+func (c *Client) waitForWeight(weight int) int {
+	req := leaseRequest{
+		weight: weight,
+		respC:  make(chan int, 1),
+	}
+	c.getLeaseC <- req
+	return <-req.respC
+}
+
+func (c *Client) CurrentWeight() int {
+	return c.waitForWeight(0)
 }
 
 func (c *Client) parseRequest(r *request, opts ...RequestOption) (err error) {
@@ -253,6 +371,12 @@ func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption)
 	if err != nil {
 		return []byte{}, err
 	}
+
+	if r.weight == 0 {
+		r.weight = 1
+	}
+	c.waitForWeight(r.weight)
+
 	req = req.WithContext(ctx)
 	req.Header = r.header
 	c.debug("request: %#v", req)
@@ -287,10 +411,25 @@ func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption)
 			continue
 		}
 		interval := strings.TrimPrefix(ukey, mbxPrefix)
-		c.Weights[interval] = values[0]
+		c.debug("weight %s for interval %s", values[0], interval)
 	}
 
 	if res.StatusCode >= 400 {
+		if res.StatusCode == 429 {
+			// IP Limit exceeded; need to back off.
+			if retryAfter := res.Header.Get("Retry-After"); retryAfter != "" {
+				i, err := strconv.Atoi(retryAfter)
+				if err != nil {
+					c.debug("retryAfter %d seconds", i)
+
+				}
+			}
+		} else if res.StatusCode == 418 {
+			retryAfter := res.Header.Get("Retry-After")
+			c.Logger.Printf("Ban response: %#v", res)
+			panic(fmt.Sprintf("Your IP has been banned for %q", retryAfter))
+		}
+
 		apiErr := new(common.APIError)
 		e := json.Unmarshal(data, apiErr)
 		if e != nil {

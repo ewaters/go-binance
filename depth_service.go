@@ -32,6 +32,14 @@ func (s *DepthService) Do(ctx context.Context, opts ...RequestOption) (res *Dept
 	r.setParam("symbol", s.symbol)
 	if s.limit != nil {
 		r.setParam("limit", *s.limit)
+		switch *s.limit {
+		case 500:
+			r.weight = 5
+		case 1000:
+			r.weight = 10
+		case 5000:
+			r.weight = 50
+		}
 	}
 	data, err := s.c.callAPI(ctx, r, opts...)
 	if err != nil {

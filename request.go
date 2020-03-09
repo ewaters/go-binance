@@ -28,6 +28,7 @@ type request struct {
 	header     http.Header
 	body       io.Reader
 	fullURL    string
+	weight     int
 }
 
 // setParam set param with key/value to query string
