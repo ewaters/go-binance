@@ -363,6 +363,11 @@ func (c *Client) parseRequest(r *request, opts ...RequestOption) (err error) {
 }
 
 func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption) (data []byte, err error) {
+	if r.weight == 0 {
+		r.weight = 1
+	}
+	c.waitForWeight(r.weight)
+
 	err = c.parseRequest(r, opts...)
 	if err != nil {
 		return []byte{}, err
@@ -371,11 +376,6 @@ func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption)
 	if err != nil {
 		return []byte{}, err
 	}
-
-	if r.weight == 0 {
-		r.weight = 1
-	}
-	c.waitForWeight(r.weight)
 
 	req = req.WithContext(ctx)
 	req.Header = r.header
